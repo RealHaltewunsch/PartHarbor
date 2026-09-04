@@ -53,6 +53,18 @@ JLCPCB_SEARCH_API = "https://jlcpcb.com/api/overseas-pcb-order/v1/shoppingCart/s
 # ------------------------------------------------------------
 
 
+class RateLimitExceededError(RuntimeError):
+    """Raised when a server keeps throttling beyond the configured wait budget."""
+
+    def __init__(self, status: int, waited_seconds: float) -> None:
+        self.status = status
+        self.waited_seconds = waited_seconds
+        super().__init__(
+            f"EasyEDA rate limit persisted for {waited_seconds:.0f} seconds "
+            f"(HTTP {status}). The import was paused safely."
+        )
+
+
 class EasyedaApi:
     def __init__(
         self,
@@ -60,6 +72,7 @@ class EasyedaApi:
         max_retries: int = 0,
         retry_base_delay: float = 1.0,
         min_request_interval: float = 0.0,
+        rate_limit_time_budget: float = 60.0,
     ) -> None:
         self.headers = {
             "Accept-Encoding": "gzip, deflate",
@@ -74,19 +87,42 @@ class EasyedaApi:
         self.max_retries = max(0, max_retries)
         self.retry_base_delay = max(0.0, retry_base_delay)
         self.min_request_interval = max(0.0, min_request_interval)
+        self.rate_limit_time_budget = max(0.0, rate_limit_time_budget)
         self._last_request_at = 0.0
+        self._adaptive_interval = 0.0
+        self._successful_requests_since_throttle = 0
         self.last_error_status: int | None = None
         self.last_error_message = ""
+
+    @property
+    def adaptive_interval(self) -> float:
+        """Current rate-limit-induced delay; zero before the server throttles."""
+        return self._adaptive_interval
+
+    def _record_success(self) -> None:
+        if self._adaptive_interval <= 0:
+            return
+        self._successful_requests_since_throttle += 1
+        if self._successful_requests_since_throttle >= 5:
+            self._adaptive_interval /= 2
+            if self._adaptive_interval < 0.25:
+                self._adaptive_interval = 0.0
+            self._successful_requests_since_throttle = 0
 
     def _urlopen_with_retry(
         self, request: urllib.request.Request, timeout: int
     ) -> Any:
         """Open a request with optional pacing and transient-error retries."""
-        retryable_statuses = {403, 408, 425, 429, 500, 502, 503, 504}
+        rate_limit_statuses = {403, 429}
+        retryable_statuses = rate_limit_statuses | {408, 425, 500, 502, 503, 504}
+        rate_limit_waited = 0.0
         for attempt in range(self.max_retries + 1):
             elapsed = time.monotonic() - self._last_request_at
-            if self._last_request_at and elapsed < self.min_request_interval:
-                time.sleep(self.min_request_interval - elapsed)
+            request_interval = max(
+                self.min_request_interval, self._adaptive_interval
+            )
+            if attempt == 0 and self._last_request_at and elapsed < request_interval:
+                time.sleep(request_interval - elapsed)
             self._last_request_at = time.monotonic()
             try:
                 response = urllib.request.urlopen(  # noqa: S310
@@ -94,24 +130,44 @@ class EasyedaApi:
                 )
                 self.last_error_status = None
                 self.last_error_message = ""
+                self._record_success()
                 return response
             except urllib.error.HTTPError as error:
                 self.last_error_status = error.code
                 self.last_error_message = f"HTTP {error.code}: {error.reason}"
                 if error.code not in retryable_statuses or attempt >= self.max_retries:
                     raise
+                if error.code in rate_limit_statuses:
+                    self._adaptive_interval = min(
+                        8.0, max(0.5, self._adaptive_interval * 2)
+                    )
+                    self._successful_requests_since_throttle = 0
                 retry_after = error.headers.get("Retry-After") if error.headers else None
                 try:
                     delay = float(retry_after) if retry_after else 0.0
                 except ValueError:
                     delay = 0.0
-                delay = max(delay, self.retry_base_delay * (2**attempt))
+                delay = min(
+                    30.0,
+                    max(delay, self.retry_base_delay * (2**attempt)),
+                )
+                if error.code in rate_limit_statuses:
+                    remaining_budget = (
+                        self.rate_limit_time_budget - rate_limit_waited
+                    )
+                    if remaining_budget <= 0:
+                        raise RateLimitExceededError(
+                            error.code, rate_limit_waited
+                        ) from error
+                    delay = min(delay, remaining_budget)
                 logging.warning(
                     "EasyEDA request returned HTTP %s; retrying in %.1f seconds",
                     error.code,
                     delay,
                 )
                 time.sleep(delay)
+                if error.code in rate_limit_statuses:
+                    rate_limit_waited += delay
             except urllib.error.URLError as error:
                 self.last_error_status = -1
                 self.last_error_message = str(error.reason)

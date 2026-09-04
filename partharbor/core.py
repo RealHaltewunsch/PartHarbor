@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from easyeda2kicad.__main__ import _process_component
-from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
+from easyeda2kicad.easyeda.easyeda_api import EasyedaApi, RateLimitExceededError
 
 
 LCSC_ID_RE = re.compile(r"\bC\d+\b", re.IGNORECASE)
@@ -175,6 +175,7 @@ class ImportBatchResult:
     total_count: int
     remaining_ids: list[str]
     paused_for_network: bool = False
+    pause_reason: str = ""
 
 
 def converter_arguments(options: ImportOptions) -> dict[str, Any]:
@@ -210,13 +211,16 @@ def import_components(
     arguments = converter_arguments(options)
     api = EasyedaApi(
         use_cache=options.use_cache,
-        max_retries=4 if len(normalized) > 1 else 2,
+        max_retries=20 if len(normalized) > 1 else 4,
         retry_base_delay=2.0,
-        min_request_interval=0.75 if len(normalized) > 1 else 0.0,
+        min_request_interval=0.0,
+        rate_limit_time_budget=60.0,
     )
     result: dict[str, bool] = {}
     consecutive_network_failures = 0
     remaining_ids: list[str] = []
+    pause_reason = ""
+    paused_for_network = False
     for index, part_id in enumerate(normalized):
         exact = (metadata_by_id or {}).get(part_id)
         if exact is None:
@@ -226,7 +230,17 @@ def import_components(
                 None,
             )
         arguments["custom_fields"] = _metadata_fields(exact) if exact else {}
-        ok = _process_component(part_id, arguments, api)
+        try:
+            ok = _process_component(part_id, arguments, api)
+        except RateLimitExceededError as error:
+            ok = False
+            result[part_id] = ok
+            if progress:
+                progress(part_id, ok)
+            remaining_ids = normalized[index + 1 :]
+            pause_reason = str(error)
+            paused_for_network = True
+            break
         result[part_id] = ok
         if progress:
             progress(part_id, ok)
@@ -236,12 +250,19 @@ def import_components(
             consecutive_network_failures = 0
         if consecutive_network_failures >= 3:
             remaining_ids = normalized[index + 1 :]
+            last_error = getattr(api, "last_error_message", "")
+            pause_reason = (
+                "The import was paused after three consecutive server/network "
+                f"failures. Last error: {last_error or 'unknown error'}."
+            )
+            paused_for_network = True
             break
     return ImportBatchResult(
         outcomes=result,
         total_count=len(normalized),
         remaining_ids=remaining_ids,
-        paused_for_network=bool(remaining_ids),
+        paused_for_network=paused_for_network,
+        pause_reason=pause_reason,
     )
 
 
@@ -256,9 +277,10 @@ def fetch_jlcpcb_catalog(
         raise ValueError("Select Basic parts, Preferred parts, or both.")
     api = EasyedaApi(
         use_cache=False,
-        max_retries=3,
+        max_retries=20,
         retry_base_delay=1.0,
-        min_request_interval=0.25,
+        min_request_interval=0.0,
+        rate_limit_time_budget=30.0,
     )
     first = api.search_jlcpcb_components(
         "",

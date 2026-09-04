@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 import partharbor.core as core
+from easyeda2kicad.easyeda.easyeda_api import RateLimitExceededError
 from partharbor.core import (
     ImportOptions,
     converter_arguments,
@@ -105,6 +106,29 @@ def test_batch_pauses_after_repeated_network_failures(
     assert list(result.outcomes) == ["C1", "C2", "C3"]
     assert result.remaining_ids == ["C4", "C5"]
     assert result.paused_for_network
+
+
+def test_batch_reports_exhausted_rate_limit_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeApi:
+        def __init__(self, **kwargs: object) -> None:
+            self.last_error_status: int | None = None
+
+    def rate_limited(*args: object, **kwargs: object) -> bool:
+        raise RateLimitExceededError(429, 60)
+
+    monkeypatch.setattr(core, "EasyedaApi", FakeApi)
+    monkeypatch.setattr(core, "_process_component", rate_limited)
+    result = core.import_components(
+        ["C1", "C2"],
+        ImportOptions(symbol=True, footprint=False, model_3d=False, output=tmp_path / "lib"),
+        metadata_by_id={"C1": {}, "C2": {}},
+    )
+    assert result.outcomes == {"C1": False}
+    assert result.remaining_ids == ["C2"]
+    assert result.paused_for_network
+    assert "HTTP 429" in result.pause_reason
 
 
 def test_catalog_sync_plan_imports_difference_or_overwrites(tmp_path: Path) -> None:

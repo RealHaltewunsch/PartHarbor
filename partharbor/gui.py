@@ -401,7 +401,7 @@ class PartHarborFrame(wx.Frame):
             message += f"\n\nFailed/skipped: {len(failed):,}\n{self._summarize_ids(failed)}"
         if result.paused_for_network:
             message += (
-                f"\n\nPaused after repeated server/network errors. "
+                f"\n\n{result.pause_reason}\n"
                 f"Not attempted yet: {len(result.remaining_ids):,}.\n"
                 "Wait a while, then run Catalog Sync again. Parts already written "
                 "will be detected locally and excluded automatically."

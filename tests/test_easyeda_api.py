@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
+from easyeda2kicad.easyeda.easyeda_api import EasyedaApi, RateLimitExceededError
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +228,42 @@ class TestGetSvgFromApiCacheHit:
 
 
 class TestGetInfoNetworkPath:
+    def test_has_no_delay_before_server_throttles(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        api = EasyedaApi(use_cache=False, max_retries=1)
+        payload = {"success": True, "result": {"dataStr": "fast"}}
+        sleeps: list[float] = []
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda *args, **kwargs: _fake_response(json.dumps(payload).encode()),
+        )
+        monkeypatch.setattr("time.sleep", sleeps.append)
+        api.get_info_from_easyeda_api("C1")
+        api.get_info_from_easyeda_api("C2")
+        assert sleeps == []
+        assert api.adaptive_interval == 0
+
+    def test_aborts_with_clear_error_when_rate_limit_budget_is_exhausted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        api = EasyedaApi(
+            use_cache=False,
+            max_retries=20,
+            retry_base_delay=2,
+            rate_limit_time_budget=0,
+        )
+
+        def rate_limited(*args: object, **kwargs: object) -> None:
+            raise urllib.error.HTTPError(
+                "https://easyeda.com/test", 429, "Too Many Requests", {}, None
+            )
+
+        monkeypatch.setattr("urllib.request.urlopen", rate_limited)
+        with pytest.raises(RateLimitExceededError, match="HTTP 429"):
+            api.get_info_from_easyeda_api("C1")
+        assert api.adaptive_interval == 0.5
+
     def test_retries_rate_limit_response(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

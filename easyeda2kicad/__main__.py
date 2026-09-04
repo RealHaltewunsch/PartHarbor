@@ -214,6 +214,19 @@ def _process_component(
 
     output = arguments["output"]
 
+    # Finish all network-dependent work before writing any local assets. If a
+    # rate limit is hit while downloading a 3D model, the next catalogue sync
+    # must still see this component as missing and retry it completely.
+    model_exporter: Exporter3dModelKicad | None = None
+    if arguments["3d"]:
+        model_exporter = Exporter3dModelKicad(
+            model_3d=Easyeda3dModelImporter(
+                easyeda_cp_cad_data=cad_data,
+                download_raw_3d_model=True,
+                api=api,
+            ).output,
+        )
+
     if arguments["symbol"]:
         # ---------------- SYMBOL ----------------
         easyeda_symbol: EeSymbol = EasyedaSymbolImporter(
@@ -299,13 +312,7 @@ def _process_component(
 
     if arguments["3d"]:
         # ---------------- 3D MODEL ----------------
-        model_exporter = Exporter3dModelKicad(
-            model_3d=Easyeda3dModelImporter(
-                easyeda_cp_cad_data=cad_data,
-                download_raw_3d_model=True,
-                api=api,
-            ).output,
-        )
+        assert model_exporter is not None
         output_dir = Path(f"{output}.3dshapes")
         if not model_exporter.output:
             logging.warning(f"No 3D model available for ID: {component_id}")
