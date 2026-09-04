@@ -1,6 +1,8 @@
 # Local dir
 output_lib/*
 scripts/*
+!scripts/build_pcm.py
+!scripts/launch_macos.command
 .vscode/*
 *.sqlite3
 TODO

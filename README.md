@@ -1,4 +1,62 @@
-# easyeda2kicad
+# PartHarbor
+
+![PartHarbor icon](assets/partharbor-logo.png)
+
+PartHarbor is a graphical component search and importer for KiCad. Search the
+current JLCPCB catalogue using terms such as `100n 0402 16v`, prefer Basic
+parts, or paste one or more LCSC C-numbers. The selected symbol, footprint and
+3D model are converted and stored in the existing
+`~/Documents/KiCad/easyeda2kicad` library by default.
+
+PartHarbor is based on [uPesy's easyeda2kicad.py](https://github.com/uPesy/easyeda2kicad.py).
+The converter source and its history remain included and licensed under
+AGPL-3.0.
+
+## Current features
+
+- Live JLCPCB search with Basic/Preferred, all, and Extended filters
+- Local search across the symbols already imported into the KiCad library
+- Multi-ID import from arbitrary pasted text
+- Symbol, footprint, and 3D model enabled by default (`--full` equivalent)
+- Each asset can be disabled independently; overwrite is disabled by default
+- C-number is written as `LCSC Part` and `ki_keywords`, so KiCad's symbol chooser
+  can find an imported part by its C-number
+- Self-contained KiCad Plugin and Content Manager (PCM) package
+
+## Run from the source tree on macOS
+
+KiCad ships the required wxPython runtime:
+
+```bash
+./scripts/launch_macos.command
+```
+
+## Build and install the KiCad addon
+
+```bash
+python3 scripts/build_pcm.py
+```
+
+In KiCad, open **Plugin and Content Manager**, choose **Install from File**, and
+select `dist/partharbor-0.1.0-pcm.zip`. The action appears under
+**PCB Editor → Tools → External Plugins** and can be enabled as a toolbar icon.
+
+KiCad 10.0.3 still exposes Python Action Plugins only in PCB Editor, not in
+Schematic Editor. Therefore a native Schematic Editor toolbar button cannot be
+implemented through KiCad's supported public API today. The imported symbol is
+nevertheless immediately intended for use in Schematic Editor through
+**Place Symbol**, where it can be searched by C-number after the library is
+registered/reloaded.
+
+## One-time KiCad library registration
+
+Use the same registration as the upstream converter:
+
+- Environment path `EASYEDA2KICAD` → `~/Documents/KiCad/easyeda2kicad`
+- Symbol library → `${EASYEDA2KICAD}/easyeda2kicad.kicad_sym`
+- Footprint library → `${EASYEDA2KICAD}/easyeda2kicad.pretty`
+
+## Upstream converter documentation
 
 [![PyPI version](https://img.shields.io/pypi/v/easyeda2kicad.svg)](https://pypi.org/project/easyeda2kicad/)
 [![License](https://img.shields.io/github/license/upesy/easyeda2kicad.py.svg)](https://github.com/uPesy/easyeda2kicad.py/blob/master/LICENSE)
