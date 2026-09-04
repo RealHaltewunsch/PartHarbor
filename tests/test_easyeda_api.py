@@ -228,6 +228,28 @@ class TestGetSvgFromApiCacheHit:
 
 
 class TestGetInfoNetworkPath:
+    def test_retries_rate_limit_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        api = EasyedaApi(use_cache=False, max_retries=1, retry_base_delay=0)
+        payload = {"success": True, "result": {"dataStr": "after retry"}}
+        responses: list[object] = [
+            urllib.error.HTTPError(
+                "https://easyeda.com/test", 429, "Too Many Requests", {}, None
+            ),
+            _fake_response(json.dumps(payload).encode()),
+        ]
+
+        def fake_urlopen(*args: object, **kwargs: object) -> object:
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        assert api.get_info_from_easyeda_api("C11111") == payload
+        assert responses == []
+
     def test_fetches_and_returns_json(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

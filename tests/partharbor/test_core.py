@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+import partharbor.core as core
 from partharbor.core import (
     ImportOptions,
     converter_arguments,
@@ -68,6 +69,42 @@ def test_local_symbol_search(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert search_local_symbols("100n C1591", library)[0]["name"] == "CL10B104"
+
+
+def test_local_symbol_index_accepts_multiline_kicad_properties(
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "parts.kicad_sym"
+    library.write_text(
+        '(kicad_symbol_lib\n  (symbol "CL05B104"\n'
+        '    (property\n      "LCSC Part"\n      "C1525"\n'
+        '      (at 0 0 0)\n    )\n  )\n)',
+        encoding="utf-8",
+    )
+    assert core.index_local_symbols(library)[0]["lcsc"] == "C1525"
+
+
+def test_batch_pauses_after_repeated_network_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeApi:
+        def __init__(self, **kwargs: object) -> None:
+            self.last_error_status: int | None = None
+
+    def fail(_part_id: str, _arguments: object, api: FakeApi) -> bool:
+        api.last_error_status = 429
+        return False
+
+    monkeypatch.setattr(core, "EasyedaApi", FakeApi)
+    monkeypatch.setattr(core, "_process_component", fail)
+    result = core.import_components(
+        ["C1", "C2", "C3", "C4", "C5"],
+        ImportOptions(symbol=True, footprint=False, model_3d=False, output=tmp_path / "lib"),
+        metadata_by_id={f"C{number}": {} for number in range(1, 6)},
+    )
+    assert list(result.outcomes) == ["C1", "C2", "C3"]
+    assert result.remaining_ids == ["C4", "C5"]
+    assert result.paused_for_network
 
 
 def test_catalog_sync_plan_imports_difference_or_overwrites(tmp_path: Path) -> None:

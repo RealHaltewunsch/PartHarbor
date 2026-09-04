@@ -8,6 +8,7 @@ import logging
 import re
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,7 +54,13 @@ JLCPCB_SEARCH_API = "https://jlcpcb.com/api/overseas-pcb-order/v1/shoppingCart/s
 
 
 class EasyedaApi:
-    def __init__(self, use_cache: bool = False) -> None:
+    def __init__(
+        self,
+        use_cache: bool = False,
+        max_retries: int = 0,
+        retry_base_delay: float = 1.0,
+        min_request_interval: float = 0.0,
+    ) -> None:
         self.headers = {
             "Accept-Encoding": "gzip, deflate",
             "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -64,6 +71,60 @@ class EasyedaApi:
         self.ssl_context = self._create_ssl_context()
         self.cache_dir = Path.cwd() / ".easyeda_cache"
         self.use_cache = use_cache
+        self.max_retries = max(0, max_retries)
+        self.retry_base_delay = max(0.0, retry_base_delay)
+        self.min_request_interval = max(0.0, min_request_interval)
+        self._last_request_at = 0.0
+        self.last_error_status: int | None = None
+        self.last_error_message = ""
+
+    def _urlopen_with_retry(
+        self, request: urllib.request.Request, timeout: int
+    ) -> Any:
+        """Open a request with optional pacing and transient-error retries."""
+        retryable_statuses = {403, 408, 425, 429, 500, 502, 503, 504}
+        for attempt in range(self.max_retries + 1):
+            elapsed = time.monotonic() - self._last_request_at
+            if self._last_request_at and elapsed < self.min_request_interval:
+                time.sleep(self.min_request_interval - elapsed)
+            self._last_request_at = time.monotonic()
+            try:
+                response = urllib.request.urlopen(  # noqa: S310
+                    request, timeout=timeout, context=self.ssl_context
+                )
+                self.last_error_status = None
+                self.last_error_message = ""
+                return response
+            except urllib.error.HTTPError as error:
+                self.last_error_status = error.code
+                self.last_error_message = f"HTTP {error.code}: {error.reason}"
+                if error.code not in retryable_statuses or attempt >= self.max_retries:
+                    raise
+                retry_after = error.headers.get("Retry-After") if error.headers else None
+                try:
+                    delay = float(retry_after) if retry_after else 0.0
+                except ValueError:
+                    delay = 0.0
+                delay = max(delay, self.retry_base_delay * (2**attempt))
+                logging.warning(
+                    "EasyEDA request returned HTTP %s; retrying in %.1f seconds",
+                    error.code,
+                    delay,
+                )
+                time.sleep(delay)
+            except urllib.error.URLError as error:
+                self.last_error_status = -1
+                self.last_error_message = str(error.reason)
+                if attempt >= self.max_retries:
+                    raise
+                delay = self.retry_base_delay * (2**attempt)
+                logging.warning(
+                    "EasyEDA request failed (%s); retrying in %.1f seconds",
+                    error.reason,
+                    delay,
+                )
+                time.sleep(delay)
+        raise RuntimeError("unreachable")
 
     def _get_cache_path(self, identifier: str, extension: str) -> Path:
         """Get the cache file path for a specific resource."""
@@ -178,9 +239,7 @@ class EasyedaApi:
             req = urllib.request.Request(  # noqa: S310
                 url=API_ENDPOINT.format(lcsc_id=lcsc_id), headers=self.headers
             )
-            with urllib.request.urlopen(  # noqa: S310
-                req, timeout=30, context=self.ssl_context
-            ) as response:
+            with self._urlopen_with_retry(req, timeout=30) as response:
                 data = self._decode_response(response.read())
                 try:
                     api_response: dict[str, Any] = json.loads(data)
@@ -221,9 +280,7 @@ class EasyedaApi:
                 url=ENDPOINT_3D_MODEL.format(uuid=uuid),
                 headers={"User-Agent": self.headers["User-Agent"]},
             )
-            with urllib.request.urlopen(  # noqa: S310
-                req, timeout=30, context=self.ssl_context
-            ) as response:
+            with self._urlopen_with_retry(req, timeout=30) as response:
                 if response.status != 200:
                     logging.error(
                         f"No raw 3D model data found for uuid:{uuid} on easyeda"
@@ -251,9 +308,7 @@ class EasyedaApi:
                 url=ENDPOINT_3D_MODEL_STEP.format(uuid=uuid),
                 headers={"User-Agent": self.headers["User-Agent"]},
             )
-            with urllib.request.urlopen(  # noqa: S310
-                req, timeout=30, context=self.ssl_context
-            ) as response:
+            with self._urlopen_with_retry(req, timeout=30) as response:
                 if response.status != 200:
                     logging.error(
                         f"No step 3D model data found for uuid:{uuid} on easyeda"
@@ -276,9 +331,7 @@ class EasyedaApi:
         url = base + path
         try:
             req = urllib.request.Request(url=url, headers=self.headers)  # noqa: S310
-            with urllib.request.urlopen(  # noqa: S310
-                req, timeout=30, context=self.ssl_context
-            ) as response:
+            with self._urlopen_with_retry(req, timeout=30) as response:
                 result: dict[str, Any] = json.loads(
                     self._decode_response(response.read())
                 )
@@ -307,9 +360,7 @@ class EasyedaApi:
                     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                 },
             )
-            with urllib.request.urlopen(  # noqa: S310
-                req, timeout=30, context=self.ssl_context
-            ) as response:
+            with self._urlopen_with_retry(req, timeout=30) as response:
                 result: dict[str, Any] = json.loads(
                     self._decode_response(response.read())
                 )
@@ -355,9 +406,7 @@ class EasyedaApi:
                     "Referer": "https://jlcpcb.com/parts",
                 },
             )
-            with urllib.request.urlopen(  # noqa: S310
-                req, timeout=15, context=self.ssl_context
-            ) as response:
+            with self._urlopen_with_retry(req, timeout=15) as response:
                 raw: dict[str, Any] = json.loads(self._decode_response(response.read()))
         except (urllib.error.URLError, json.JSONDecodeError) as e:
             logging.error(f"JLCPCB search failed: {e}")
@@ -432,9 +481,7 @@ class EasyedaApi:
                 url=ENDPOINT_SVG.format(lcsc_id=lcsc_id),
                 headers=self.headers,
             )
-            with urllib.request.urlopen(  # noqa: S310
-                req, timeout=15, context=self.ssl_context
-            ) as response:
+            with self._urlopen_with_retry(req, timeout=15) as response:
                 raw = self._decode_response(response.read())
                 data: dict[str, Any] = json.loads(raw)
         except (urllib.error.URLError, json.JSONDecodeError) as e:
@@ -478,9 +525,7 @@ class EasyedaApi:
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 },
             )
-            with urllib.request.urlopen(  # noqa: S310
-                req, timeout=10, context=self.ssl_context
-            ) as response:
+            with self._urlopen_with_retry(req, timeout=10) as response:
                 html = self._decode_response(response.read())
         except (urllib.error.URLError, OSError) as e:
             logging.error(f"Failed to fetch LCSC product page: {e}")

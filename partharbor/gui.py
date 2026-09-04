@@ -9,6 +9,7 @@ import wx
 
 from .core import (
     CatalogSyncPlan,
+    ImportBatchResult,
     ImportOptions,
     default_library_base,
     fetch_jlcpcb_catalog,
@@ -390,16 +391,35 @@ class PartHarborFrame(wx.Frame):
         metadata = {str(part["lcsc"]): part for part in plan.parts}
         self._start_import(plan.import_ids, metadata)
 
-    def _import_done(self, result: dict[str, bool]) -> None:
-        ok = [part_id for part_id, success in result.items() if success]
-        failed = [part_id for part_id, success in result.items() if not success]
+    def _import_done(self, result: ImportBatchResult) -> None:
+        ok = [part_id for part_id, success in result.outcomes.items() if success]
+        failed = [
+            part_id for part_id, success in result.outcomes.items() if not success
+        ]
         message = f"Imported: {len(ok):,}\n{self._summarize_ids(ok)}"
         if failed:
             message += f"\n\nFailed/skipped: {len(failed):,}\n{self._summarize_ids(failed)}"
-            message += "\nThe part may already exist. Enable ‘Overwrite existing parts’ to update it."
+        if result.paused_for_network:
+            message += (
+                f"\n\nPaused after repeated server/network errors. "
+                f"Not attempted yet: {len(result.remaining_ids):,}.\n"
+                "Wait a while, then run Catalog Sync again. Parts already written "
+                "will be detected locally and excluded automatically."
+            )
+        elif failed:
+            message += (
+                "\nThe part may already exist or no requested asset was available. "
+                "Enable ‘Overwrite existing parts’ to update existing symbols."
+            )
         message += "\n\nReload the symbol libraries in KiCad if needed. The C-number is stored as a search keyword."
         self.status.SetLabel(message.splitlines()[0])
-        wx.MessageBox(message, "PartHarbor", wx.OK | (wx.ICON_WARNING if failed else wx.ICON_INFORMATION), self)
+        warning = failed or result.paused_for_network
+        wx.MessageBox(
+            message,
+            "PartHarbor",
+            wx.OK | (wx.ICON_WARNING if warning else wx.ICON_INFORMATION),
+            self,
+        )
 
     @staticmethod
     def _summarize_ids(ids: list[str], limit: int = 20) -> str:

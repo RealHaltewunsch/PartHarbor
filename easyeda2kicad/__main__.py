@@ -206,6 +206,7 @@ def _process_component(
     api: EasyedaApi,
 ) -> bool:
     """Process a single LCSC component. Returns True on success, False on error."""
+    made_change = False
     cad_data = api.get_cad_data_of_component(lcsc_id=component_id)
     if not cad_data:
         logging.error(f"Failed to fetch data from EasyEDA API for part {component_id}")
@@ -233,6 +234,7 @@ def _process_component(
                 f"Symbol for {component_id} already exists. Use --overwrite to update"
             )
             return False
+        made_change = True
         if easyeda_symbol.sub_symbols:
             logging.info(
                 f"Integrated {len(easyeda_symbol.sub_symbols)} sub-symbols into main symbol"
@@ -248,33 +250,33 @@ def _process_component(
         easyeda_footprint = EasyedaFootprintImporter(
             easyeda_cp_cad_data=cad_data
         ).get_footprint()
-        if (
-            Path(f"{output}.pretty") / f"{easyeda_footprint.info.name}.kicad_mod"
-        ).is_file() and not arguments["overwrite"]:
-            logging.error(
-                f"Footprint for {component_id} already exists. Use --overwrite to replace"
-            )
-            return False
         footprint_path = Path(f"{output}.pretty")
-        if arguments.get("use_default_folder"):
-            model_3d_path = "${EASYEDA2KICAD}/easyeda2kicad.3dshapes"
-        elif arguments["project_relative"]:
-            model_3d_path = (
-                "${KIPRJMOD}/"
-                + Path(f"{output}.3dshapes").relative_to(Path.cwd()).as_posix()
+        footprint_filename = f"{easyeda_footprint.info.name}.kicad_mod"
+        footprint_full_path = footprint_path / footprint_filename
+        if footprint_full_path.is_file() and not arguments["overwrite"]:
+            logging.info(
+                f"Reusing existing footprint for {component_id}: {footprint_filename}"
             )
         else:
-            model_3d_path = Path(f"{output}.3dshapes").as_posix()
-        footprint_filename = f"{easyeda_footprint.info.name}.kicad_mod"
-        ExporterFootprintKicad(footprint=easyeda_footprint).export(
-            footprint_full_path=str(footprint_path / footprint_filename),
-            model_3d_path=model_3d_path,
-        )
-        logging.info(
-            f"Created Kicad footprint for ID: {component_id}\n"
-            f"       Footprint name: {easyeda_footprint.info.name}\n"
-            f"       Footprint path: {footprint_path / footprint_filename}"
-        )
+            if arguments.get("use_default_folder"):
+                model_3d_path = "${EASYEDA2KICAD}/easyeda2kicad.3dshapes"
+            elif arguments["project_relative"]:
+                model_3d_path = (
+                    "${KIPRJMOD}/"
+                    + Path(f"{output}.3dshapes").relative_to(Path.cwd()).as_posix()
+                )
+            else:
+                model_3d_path = Path(f"{output}.3dshapes").as_posix()
+            ExporterFootprintKicad(footprint=easyeda_footprint).export(
+                footprint_full_path=str(footprint_full_path),
+                model_3d_path=model_3d_path,
+            )
+            made_change = True
+            logging.info(
+                f"Created Kicad footprint for ID: {component_id}\n"
+                f"       Footprint name: {easyeda_footprint.info.name}\n"
+                f"       Footprint path: {footprint_full_path}"
+            )
 
     if arguments["svg"]:
         # ---------------- SVG ----------------
@@ -310,11 +312,12 @@ def _process_component(
         elif not model_exporter.export(
             output_dir=str(output_dir), overwrite=arguments["overwrite"]
         ):
-            logging.error(
-                f"3D model for {component_id} already exists. Use --overwrite to replace"
+            logging.info(
+                f"Reusing existing 3D model for {component_id}: "
+                f"{model_exporter.output.name}"
             )
-            return False
         else:
+            made_change = True
             model_name = model_exporter.output.name
             logging.info(
                 f"Created 3D model for ID: {component_id}\n"
@@ -323,7 +326,7 @@ def _process_component(
                 f"       3D model path (step): {output_dir / f'{model_name}.step'}"
             )
 
-    return True
+    return made_change or arguments["svg"]
 
 
 def main(argv: list[str] = sys.argv[1:]) -> int:

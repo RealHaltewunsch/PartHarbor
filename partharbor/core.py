@@ -169,6 +169,14 @@ class CatalogSyncPlan:
     preferred_count: int
 
 
+@dataclass(frozen=True)
+class ImportBatchResult:
+    outcomes: dict[str, bool]
+    total_count: int
+    remaining_ids: list[str]
+    paused_for_network: bool = False
+
+
 def converter_arguments(options: ImportOptions) -> dict[str, Any]:
     options.validate()
     output = options.output.expanduser()
@@ -195,14 +203,21 @@ def import_components(
     options: ImportOptions,
     progress: Callable[[str, bool], None] | None = None,
     metadata_by_id: dict[str, dict[str, Any]] | None = None,
-) -> dict[str, bool]:
+) -> ImportBatchResult:
     normalized = normalize_lcsc_ids(ids)
     if not normalized:
         raise ValueError("No valid LCSC number found (example: C2040).")
     arguments = converter_arguments(options)
-    api = EasyedaApi(use_cache=options.use_cache)
+    api = EasyedaApi(
+        use_cache=options.use_cache,
+        max_retries=4 if len(normalized) > 1 else 2,
+        retry_base_delay=2.0,
+        min_request_interval=0.75 if len(normalized) > 1 else 0.0,
+    )
     result: dict[str, bool] = {}
-    for part_id in normalized:
+    consecutive_network_failures = 0
+    remaining_ids: list[str] = []
+    for index, part_id in enumerate(normalized):
         exact = (metadata_by_id or {}).get(part_id)
         if exact is None:
             metadata = api.search_jlcpcb_components(part_id, page_size=20)
@@ -215,7 +230,19 @@ def import_components(
         result[part_id] = ok
         if progress:
             progress(part_id, ok)
-    return result
+        if not ok and api.last_error_status is not None:
+            consecutive_network_failures += 1
+        else:
+            consecutive_network_failures = 0
+        if consecutive_network_failures >= 3:
+            remaining_ids = normalized[index + 1 :]
+            break
+    return ImportBatchResult(
+        outcomes=result,
+        total_count=len(normalized),
+        remaining_ids=remaining_ids,
+        paused_for_network=bool(remaining_ids),
+    )
 
 
 def fetch_jlcpcb_catalog(
@@ -227,7 +254,12 @@ def fetch_jlcpcb_catalog(
     """Fetch the complete current Basic and/or Preferred component catalogue."""
     if not include_basic and not include_preferred:
         raise ValueError("Select Basic parts, Preferred parts, or both.")
-    api = EasyedaApi(use_cache=False)
+    api = EasyedaApi(
+        use_cache=False,
+        max_retries=3,
+        retry_base_delay=1.0,
+        min_request_interval=0.25,
+    )
     first = api.search_jlcpcb_components(
         "",
         page=1,
@@ -372,7 +404,9 @@ def index_local_symbols(symbol_library: Path) -> list[dict[str, str]]:
     if not symbol_library.is_file():
         return []
     text = symbol_library.read_text(encoding="utf-8", errors="replace")
-    starts = list(re.finditer(r'^\t\(symbol\s+"([^"]+)"', text, re.MULTILINE))
+    starts = list(
+        re.finditer(r'^(?:\t| {2})\(symbol\s+"([^"]+)"', text, re.MULTILINE)
+    )
     parts: list[dict[str, str]] = []
     for number, start in enumerate(starts):
         end = starts[number + 1].start() if number + 1 < len(starts) else len(text)

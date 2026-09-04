@@ -23,6 +23,7 @@ AGPL-3.0.
 - **Synchronize the complete live JLCPCB Basic and/or Preferred catalogue**
 - Compare online C-numbers with the local library and import only the difference
 - Optionally overwrite and refresh all locally available catalogue components
+- Paced downloads with automatic retry/backoff and safe resume after server errors
 - Live JLCPCB search with Basic/Preferred, all, and Extended filters
 - Strict client-side package filtering, so a `0402` query cannot return `1206`
 - Electronics-aware aliases such as `NMOS` → `N-channel MOSFET`
@@ -49,7 +50,7 @@ python3 scripts/build_pcm.py
 ```
 
 In KiCad, open **Plugin and Content Manager**, choose **Install from File**, and
-select `dist/partharbor-0.2.1-pcm.zip`. The action appears under
+select `dist/partharbor-0.2.2-pcm.zip`. The action appears under
 **PCB Editor → Tools → External Plugins** and can be enabled as a toolbar icon.
 
 KiCad 10.0.3 still exposes Python Action Plugins only in PCB Editor, not in
