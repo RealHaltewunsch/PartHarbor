@@ -8,6 +8,7 @@ from typing import Any
 import wx
 
 from .core import (
+    AssetNeeds,
     CatalogSyncPlan,
     ImportBatchResult,
     ImportOptions,
@@ -166,9 +167,10 @@ class PartHarborFrame(wx.Frame):
         explanation = wx.StaticText(
             panel,
             label=(
-                "Download the current JLCPCB catalogue, compare its C-numbers with "
-                "the local symbol library, and import the difference. If ‘Overwrite "
-                "existing parts’ is enabled below, existing catalogue parts are updated too."
+                "Download the current JLCPCB catalogue and compare every selected "
+                "symbol, footprint, and 3D model with the local library. Only missing "
+                "assets are added. If ‘Overwrite existing parts’ is enabled below, "
+                "existing catalogue assets are updated too."
             ),
         )
         explanation.Wrap(900)
@@ -301,6 +303,7 @@ class PartHarborFrame(wx.Frame):
         self,
         ids: list[str],
         metadata_by_id: dict[str, dict[str, Any]] | None = None,
+        asset_needs_by_id: dict[str, AssetNeeds] | None = None,
     ) -> None:
         options = self._options()
         self.progress.SetRange(max(len(ids), 1))
@@ -323,6 +326,7 @@ class PartHarborFrame(wx.Frame):
                 options,
                 progress=progress,
                 metadata_by_id=metadata_by_id,
+                asset_needs_by_id=asset_needs_by_id,
             ),
             self._import_done,
         )
@@ -351,25 +355,27 @@ class PartHarborFrame(wx.Frame):
             return plan_catalog_sync(
                 parts,
                 Path(f"{options.output}.kicad_sym"),
-                options.overwrite,
+                options,
             )
 
         self._run("Loading the current JLCPCB catalogue …", job, self._confirm_catalog_sync)
 
     def _confirm_catalog_sync(self, plan: CatalogSyncPlan) -> None:
-        existing_selected = len(plan.parts) - len(plan.missing_ids)
         message = (
             f"Online selection: {len(plan.parts):,} parts\n"
             f"  Basic: {plan.basic_count:,}\n"
             f"  Preferred: {plan.preferred_count:,}\n"
-            f"Already present locally: {existing_selected:,}\n"
-            f"Missing locally: {len(plan.missing_ids):,}\n\n"
-            f"Parts to import now: {len(plan.import_ids):,}\n"
+            f"C-numbers found locally: {len(plan.local_ids):,}\n\n"
+            "Requested assets to create/update:\n"
+            f"  Symbols: {plan.missing_symbol_count:,}\n"
+            f"  Footprints: {plan.missing_footprint_count:,}\n"
+            f"  3D models: {plan.missing_model_3d_count:,}\n"
+            f"Components to process: {len(plan.import_ids):,}\n"
         )
         if self.overwrite.GetValue():
             message += "Overwrite is enabled: existing selected parts will be re-imported.\n"
         else:
-            message += "Overwrite is disabled: only missing parts will be imported.\n"
+            message += "Overwrite is disabled: only missing requested assets will be imported.\n"
         message += "\nContinue?"
         if not plan.import_ids:
             wx.MessageBox(
@@ -389,7 +395,7 @@ class PartHarborFrame(wx.Frame):
             self.status.SetLabel("Catalogue sync cancelled")
             return
         metadata = {str(part["lcsc"]): part for part in plan.parts}
-        self._start_import(plan.import_ids, metadata)
+        self._start_import(plan.import_ids, metadata, plan.asset_needs_by_id)
 
     def _import_done(self, result: ImportBatchResult) -> None:
         ok = [part_id for part_id, success in result.outcomes.items() if success]

@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 STAGE = ROOT / "build" / "pcm"
 DIST = ROOT / "dist"
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 
 
 def copy_tree(source: Path, destination: Path) -> None:

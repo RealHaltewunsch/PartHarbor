@@ -165,8 +165,22 @@ class CatalogSyncPlan:
     local_ids: set[str]
     missing_ids: list[str]
     import_ids: list[str]
+    asset_needs_by_id: dict[str, "AssetNeeds"]
+    missing_symbol_count: int
+    missing_footprint_count: int
+    missing_model_3d_count: int
     basic_count: int
     preferred_count: int
+
+
+@dataclass(frozen=True)
+class AssetNeeds:
+    symbol: bool = False
+    footprint: bool = False
+    model_3d: bool = False
+
+    def any(self) -> bool:
+        return self.symbol or self.footprint or self.model_3d
 
 
 @dataclass(frozen=True)
@@ -204,11 +218,12 @@ def import_components(
     options: ImportOptions,
     progress: Callable[[str, bool], None] | None = None,
     metadata_by_id: dict[str, dict[str, Any]] | None = None,
+    asset_needs_by_id: dict[str, AssetNeeds] | None = None,
 ) -> ImportBatchResult:
     normalized = normalize_lcsc_ids(ids)
     if not normalized:
         raise ValueError("No valid LCSC number found (example: C2040).")
-    arguments = converter_arguments(options)
+    base_arguments = converter_arguments(options)
     api = EasyedaApi(
         use_cache=options.use_cache,
         max_retries=20 if len(normalized) > 1 else 4,
@@ -222,6 +237,13 @@ def import_components(
     pause_reason = ""
     paused_for_network = False
     for index, part_id in enumerate(normalized):
+        arguments = dict(base_arguments)
+        if asset_needs_by_id is not None and part_id in asset_needs_by_id:
+            needs = asset_needs_by_id[part_id]
+            arguments["symbol"] = needs.symbol
+            arguments["footprint"] = needs.footprint
+            arguments["3d"] = needs.model_3d
+            arguments["full"] = needs.symbol and needs.footprint and needs.model_3d
         exact = (metadata_by_id or {}).get(part_id)
         if exact is None:
             metadata = api.search_jlcpcb_components(part_id, page_size=20)
@@ -329,23 +351,83 @@ def fetch_jlcpcb_catalog(
 def plan_catalog_sync(
     parts: Iterable[dict[str, Any]],
     symbol_library: Path,
-    overwrite: bool,
+    options: ImportOptions,
 ) -> CatalogSyncPlan:
     unique = {
         str(part.get("lcsc")): part
         for part in parts
         if str(part.get("lcsc", "")).startswith("C")
     }
-    local_ids = {
-        part["lcsc"] for part in index_local_symbols(symbol_library) if part["lcsc"]
+    local_symbols = {
+        part["lcsc"]: part
+        for part in index_local_symbols(symbol_library)
+        if part["lcsc"]
     }
+    local_ids = set(local_symbols)
+    output_base = symbol_library.with_suffix("")
+    footprint_dir = Path(f"{output_base}.pretty")
+    model_dir = Path(f"{output_base}.3dshapes")
+
+    footprint_by_lcsc: dict[str, Path] = {}
+    if footprint_dir.is_dir():
+        for footprint_path in footprint_dir.glob("*.kicad_mod"):
+            text = footprint_path.read_text(encoding="utf-8", errors="replace")
+            lcsc = _property(text, "LCSC Part")
+            if lcsc:
+                footprint_by_lcsc[lcsc] = footprint_path
+
+    def footprint_for(part_id: str) -> Path | None:
+        symbol = local_symbols.get(part_id)
+        if symbol and symbol["footprint"]:
+            name = symbol["footprint"].rsplit(":", 1)[-1]
+            return footprint_dir / f"{name}.kicad_mod"
+        return footprint_by_lcsc.get(part_id)
+
+    def model_is_present(footprint_path: Path | None) -> bool:
+        if footprint_path is None or not footprint_path.is_file():
+            return False
+        text = footprint_path.read_text(encoding="utf-8", errors="replace")
+        references = re.findall(r'\(model\s+"([^"]+)"', text)
+        if not references:
+            # The EasyEDA footprint contains no 3D model, so none is applicable.
+            return True
+        for reference in references:
+            candidate = Path(reference)
+            if candidate.is_absolute() and candidate.is_file():
+                continue
+            if not (model_dir / candidate.name).is_file():
+                return False
+        return True
+
     ordered_ids = list(unique)
-    missing_ids = [part_id for part_id in ordered_ids if part_id not in local_ids]
+    asset_needs_by_id: dict[str, AssetNeeds] = {}
+    for part_id in ordered_ids:
+        footprint_path = footprint_for(part_id)
+        if options.overwrite:
+            needs = AssetNeeds(options.symbol, options.footprint, options.model_3d)
+        else:
+            needs = AssetNeeds(
+                symbol=options.symbol and part_id not in local_symbols,
+                footprint=options.footprint
+                and (footprint_path is None or not footprint_path.is_file()),
+                model_3d=options.model_3d and not model_is_present(footprint_path),
+            )
+        if needs.any():
+            asset_needs_by_id[part_id] = needs
+    missing_ids = list(asset_needs_by_id)
     return CatalogSyncPlan(
         parts=[unique[part_id] for part_id in ordered_ids],
         local_ids=local_ids,
         missing_ids=missing_ids,
-        import_ids=ordered_ids if overwrite else missing_ids,
+        import_ids=missing_ids,
+        asset_needs_by_id=asset_needs_by_id,
+        missing_symbol_count=sum(needs.symbol for needs in asset_needs_by_id.values()),
+        missing_footprint_count=sum(
+            needs.footprint for needs in asset_needs_by_id.values()
+        ),
+        missing_model_3d_count=sum(
+            needs.model_3d for needs in asset_needs_by_id.values()
+        ),
         basic_count=sum(part.get("type") == "Basic" for part in unique.values()),
         preferred_count=sum(
             part.get("type") == "Preferred" for part in unique.values()

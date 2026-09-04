@@ -2,7 +2,7 @@
   "$schema": "https://go.kicad.org/pcm/schemas/v2",
   "name": "PartHarbor",
   "description": "Synchronize all JLCPCB Basic/Preferred parts and import components into KiCad.",
-  "description_full": "PartHarbor's key feature is one-click synchronization of every currently available JLCPCB Basic and/or Preferred component. It checks the live online catalogue, compares C-numbers with the local KiCad library, and imports only missing parts or refreshes all selected parts when overwrite is enabled. Individual parts can also be found through parametric search or imported directly by LCSC C-number, including symbols, footprints, and 3D models. PartHarbor is based on easyeda2kicad.py and retains its AGPL-3.0 license and attribution. The toolbar action is available in PCB Editor because KiCad does not currently expose Action Plugins in Schematic Editor.",
+  "description_full": "PartHarbor's key feature is one-click synchronization of every currently available JLCPCB Basic and/or Preferred component. It checks the live online catalogue and independently compares symbols, footprints, and 3D models with the local KiCad library. Only missing selected assets are added, while overwrite refreshes all selected assets. Individual parts can also be found through parametric search or imported directly by LCSC C-number. PartHarbor is based on easyeda2kicad.py and retains its AGPL-3.0 license and attribution. The toolbar action is available in PCB Editor because KiCad does not currently expose Action Plugins in Schematic Editor.",
   "identifier": "com.github.realhaltewunsch.partharbor",
   "type": "plugin",
   "author": {
@@ -17,7 +17,7 @@
   },
   "versions": [
     {
-      "version": "0.2.3",
+      "version": "0.2.4",
       "status": "development",
       "kicad_version": "9.0",
       "runtime": "swig"

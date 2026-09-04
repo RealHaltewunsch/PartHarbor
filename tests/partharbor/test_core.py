@@ -131,6 +131,37 @@ def test_batch_reports_exhausted_rate_limit_budget(
     assert "HTTP 429" in result.pause_reason
 
 
+def test_batch_applies_per_component_asset_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeApi:
+        def __init__(self, **kwargs: object) -> None:
+            self.last_error_status: int | None = None
+
+    selected: list[tuple[bool, bool, bool]] = []
+
+    def capture(_part_id: str, arguments: dict[str, object], _api: FakeApi) -> bool:
+        selected.append(
+            (
+                bool(arguments["symbol"]),
+                bool(arguments["footprint"]),
+                bool(arguments["3d"]),
+            )
+        )
+        return True
+
+    monkeypatch.setattr(core, "EasyedaApi", FakeApi)
+    monkeypatch.setattr(core, "_process_component", capture)
+    result = core.import_components(
+        ["C1"],
+        ImportOptions(output=tmp_path / "lib"),
+        metadata_by_id={"C1": {}},
+        asset_needs_by_id={"C1": core.AssetNeeds(model_3d=True)},
+    )
+    assert result.outcomes == {"C1": True}
+    assert selected == [(False, False, True)]
+
+
 def test_catalog_sync_plan_imports_difference_or_overwrites(tmp_path: Path) -> None:
     library = tmp_path / "parts.kicad_sym"
     library.write_text(
@@ -142,10 +173,62 @@ def test_catalog_sync_plan_imports_difference_or_overwrites(tmp_path: Path) -> N
         {"lcsc": "C1", "type": "Basic"},
         {"lcsc": "C2", "type": "Preferred"},
     ]
-    difference = plan_catalog_sync(parts, library, overwrite=False)
-    overwrite = plan_catalog_sync(parts, library, overwrite=True)
+    difference = plan_catalog_sync(
+        parts,
+        library,
+        ImportOptions(
+            symbol=True,
+            footprint=False,
+            model_3d=False,
+            overwrite=False,
+            output=tmp_path / "parts",
+        ),
+    )
+    overwrite = plan_catalog_sync(
+        parts,
+        library,
+        ImportOptions(
+            symbol=True,
+            footprint=False,
+            model_3d=False,
+            overwrite=True,
+            output=tmp_path / "parts",
+        ),
+    )
     assert difference.missing_ids == ["C2"]
     assert difference.import_ids == ["C2"]
     assert overwrite.import_ids == ["C1", "C2"]
     assert difference.basic_count == 1
     assert difference.preferred_count == 1
+
+
+def test_catalog_sync_plans_only_missing_3d_model(tmp_path: Path) -> None:
+    base = tmp_path / "parts"
+    library = Path(f"{base}.kicad_sym")
+    library.write_text(
+        '(kicad_symbol_lib\n  (symbol "Part"\n'
+        '    (property "Footprint" "parts:FP1")\n'
+        '    (property "LCSC Part" "C1")\n  )\n)',
+        encoding="utf-8",
+    )
+    footprint_dir = Path(f"{base}.pretty")
+    footprint_dir.mkdir()
+    (footprint_dir / "FP1.kicad_mod").write_text(
+        '(footprint "FP1"\n  (model "${EASYEDA2KICAD}/parts.3dshapes/M1.wrl")\n)',
+        encoding="utf-8",
+    )
+    options = ImportOptions(output=base)
+    plan = plan_catalog_sync([{"lcsc": "C1", "type": "Basic"}], library, options)
+    assert plan.import_ids == ["C1"]
+    assert plan.asset_needs_by_id["C1"] == core.AssetNeeds(model_3d=True)
+    assert plan.missing_symbol_count == 0
+    assert plan.missing_footprint_count == 0
+    assert plan.missing_model_3d_count == 1
+
+    model_dir = Path(f"{base}.3dshapes")
+    model_dir.mkdir()
+    (model_dir / "M1.wrl").write_text("model", encoding="utf-8")
+    complete = plan_catalog_sync(
+        [{"lcsc": "C1", "type": "Basic"}], library, options
+    )
+    assert complete.import_ids == []
