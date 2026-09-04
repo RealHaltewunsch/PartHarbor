@@ -5,6 +5,7 @@
 - Search the current anonymous JLCPCB catalogue
 - Default to Basic/Preferred parts
 - Normalize common shorthand such as `100n 0402 16v`
+- Resolve MOSFET aliases and strictly filter explicit package terms
 - Import one or many C-numbers
 - Import symbol, footprint and 3D model by default
 - Independently disable each asset and opt into overwrite

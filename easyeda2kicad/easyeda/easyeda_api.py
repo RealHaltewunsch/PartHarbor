@@ -324,13 +324,15 @@ class EasyedaApi:
         page: int = 1,
         page_size: int = 10,
         part_type: str | None = None,
+        preferred: bool = False,
     ) -> dict[str, Any]:
         """POST JLCPCB_SEARCH_API — keyword search across the JLCPCB parts library.
 
         Works anonymously. Returns dict with 'total' and 'results' list; each result
         contains: lcsc, name, model, brand, package, category, stock, type, price,
         price_breaks, min_qty, reel_qty, description, url, datasheet, attributes.
-        part_type: "base" = Basic, "expand" = Extended.
+        part_type: "base" = Basic, "expand" = Extended. When ``preferred`` is
+        true, JLCPCB also returns temporarily promoted Extended parts.
         """
         payload: dict[str, Any] = {
             "keyword": keyword,
@@ -339,6 +341,8 @@ class EasyedaApi:
         }
         if part_type:
             payload["componentLibraryType"] = part_type
+        if preferred:
+            payload["preferredComponentFlag"] = True
 
         try:
             req = urllib.request.Request(  # noqa: S310
@@ -375,9 +379,14 @@ class EasyedaApi:
                     "package": item.get("componentSpecificationEn", ""),
                     "category": item.get("componentTypeEn", ""),
                     "stock": item.get("stockCount", 0),
-                    "type": "Basic"
-                    if item.get("componentLibraryType") == "base"
-                    else "Extended",
+                    "type": (
+                        "Basic"
+                        if item.get("componentLibraryType") == "base"
+                        else "Preferred"
+                        if item.get("preferredComponentFlag")
+                        else "Extended"
+                    ),
+                    "preferred": bool(item.get("preferredComponentFlag")),
                     "price": prices[0].get("productPrice") if prices else None,
                     "price_breaks": [
                         {"qty": p.get("startNumber"), "price": p.get("productPrice")}

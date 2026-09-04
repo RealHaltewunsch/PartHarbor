@@ -71,7 +71,8 @@ class PartHarborFrame(wx.Frame):
         panel = wx.Panel(parent)
         layout = wx.BoxSizer(wx.VERTICAL)
         row = wx.BoxSizer(wx.HORIZONTAL)
-        self.query = wx.TextCtrl(panel, value="100n 0402 16v", style=wx.TE_PROCESS_ENTER)
+        self.query = wx.TextCtrl(panel, style=wx.TE_PROCESS_ENTER)
+        self.query.SetHint("e.g. 100n 0402 16v or NMOS 30V")
         self.query.Bind(wx.EVT_TEXT_ENTER, self._search_remote)
         row.Add(self.query, 1, wx.RIGHT, 8)
         self.part_type = wx.Choice(panel, choices=["Basic / Preferred", "All", "Extended"])
@@ -185,7 +186,7 @@ class PartHarborFrame(wx.Frame):
         wx.MessageBox(message, "PartHarbor", wx.OK | wx.ICON_ERROR, self)
 
     def _search_remote(self, _event: wx.CommandEvent) -> None:
-        kind = ["base", None, "expand"][self.part_type.GetSelection()]
+        kind = ["preferred", None, "expand"][self.part_type.GetSelection()]
         self._run("Searching JLCPCB …", lambda: search_jlcpcb(self.query.GetValue(), kind), self._show_remote)
 
     def _show_remote(self, payload: dict[str, Any]) -> None:
@@ -203,7 +204,12 @@ class PartHarborFrame(wx.Frame):
             ]
             for column, value in enumerate(values, 1):
                 self.results.SetItem(row, column, str(value))
-        self.status.SetLabel(f"Loaded {len(self.remote_results)} of {payload.get('total', 0)} results")
+        catalog_total = payload.get("catalog_total", payload.get("total", 0))
+        self.status.SetLabel(
+            f"Showing {len(self.remote_results)} matching results "
+            f"from {payload.get('candidate_count', len(self.remote_results))} loaded "
+            f"catalog candidates ({catalog_total} reported by JLCPCB)"
+        )
 
     def _show_selected_details(self, event: wx.ListEvent) -> None:
         index = event.GetIndex()

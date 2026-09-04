@@ -5,6 +5,7 @@ import pytest
 from partharbor.core import (
     ImportOptions,
     converter_arguments,
+    filter_component_results,
     format_price,
     format_price_tiers,
     normalize_component_query,
@@ -37,6 +38,17 @@ def test_price_formatting() -> None:
     assert format_price(part) == "0.0173 @ 1+"
     assert format_price_tiers(part) == "0.0173 @ 1+ | 0.0136 @ 500+"
     assert format_price({"stock": 10}) == "Unavailable"
+
+
+def test_strict_package_and_mosfet_filtering() -> None:
+    parts = [
+        {"lcsc": "C1", "type": "Basic", "stock": 10, "package": "0402", "description": "1kΩ resistor"},
+        {"lcsc": "C2", "type": "Basic", "stock": 50, "package": "1206", "description": "1kΩ resistor"},
+        {"lcsc": "C3", "type": "Preferred", "stock": 100, "package": "SOT-23", "description": "30V N-channel MOSFET"},
+        {"lcsc": "C4", "type": "Basic", "stock": 100, "package": "SOT-23", "description": "30V P-channel MOSFET"},
+    ]
+    assert [part["lcsc"] for part in filter_component_results("1k 0402", parts)] == ["C1"]
+    assert [part["lcsc"] for part in filter_component_results("NMOS 30V", parts)] == ["C3"]
 
 
 def test_options_require_one_asset(tmp_path: Path) -> None:

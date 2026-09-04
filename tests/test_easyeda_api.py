@@ -543,6 +543,19 @@ class TestSearchJlcpcbComponents:
         body_sent = captured[0].data.decode()
         assert "componentLibraryType" in body_sent
 
+    def test_preferred_filter_included(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        api = EasyedaApi(use_cache=False)
+        captured: list[Any] = []
+
+        def fake_urlopen(req: Any, **kw: Any) -> Any:
+            captured.append(req)
+            return _fake_response(self._make_jlcpcb_body([]))
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        api.search_jlcpcb_components("mosfet", part_type="base", preferred=True)
+        payload = json.loads(captured[0].data.decode())
+        assert payload["preferredComponentFlag"] is True
+
 
 # ---------------------------------------------------------------------------
 # get_product_image_url — monkeypatched

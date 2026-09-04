@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,20 @@ QUERY_SYNONYMS = {
     "pmos": "P-channel MOSFET",
     "p-mos": "P-channel MOSFET",
     "pmosfet": "P-channel MOSFET",
+}
+KNOWN_PACKAGES = {
+    "008004",
+    "01005",
+    "0201",
+    "0402",
+    "0603",
+    "0805",
+    "1206",
+    "1210",
+    "1806",
+    "1812",
+    "2010",
+    "2512",
 }
 
 
@@ -95,6 +110,41 @@ def format_price_tiers(part: dict[str, Any]) -> str:
     )
 
 
+def filter_component_results(
+    query: str, results: Iterable[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Apply strict filters for terms the JLCPCB keyword API treats loosely."""
+    raw_tokens = [token.strip(",;()[]").upper() for token in query.split()]
+    packages = {token for token in raw_tokens if token in KNOWN_PACKAGES}
+    wants_nmos = any(token.casefold() in {"nmos", "n-mos", "nmosfet"} for token in raw_tokens)
+    wants_pmos = any(token.casefold() in {"pmos", "p-mos", "pmosfet"} for token in raw_tokens)
+
+    filtered: list[dict[str, Any]] = []
+    for part in results:
+        package = str(part.get("package", "")).upper()
+        description = " ".join(
+            str(part.get(key, ""))
+            for key in ("name", "description", "category")
+        ).casefold()
+        if packages and package not in packages:
+            continue
+        if wants_nmos and "n-channel" not in description and "n channel" not in description:
+            continue
+        if wants_pmos and "p-channel" not in description and "p channel" not in description:
+            continue
+        filtered.append(part)
+
+    type_rank = {"Basic": 0, "Preferred": 1, "Extended": 2}
+    return sorted(
+        filtered,
+        key=lambda part: (
+            type_rank.get(str(part.get("type", "")), 9),
+            -int(part.get("stock", 0) or 0),
+            str(part.get("lcsc", "")),
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class ImportOptions:
     symbol: bool = True
@@ -156,14 +206,44 @@ def import_components(
 
 
 def search_jlcpcb(
-    query: str, part_type: str | None = "base", page_size: int = 50
+    query: str, part_type: str | None = "preferred", page_size: int = 100
 ) -> dict[str, Any]:
     if not query.strip():
         raise ValueError("Enter a search term.")
     normalized = normalize_component_query(query.strip())
-    return EasyedaApi(use_cache=False).search_jlcpcb_components(
-        normalized, page_size=page_size, part_type=part_type
+    preferred = part_type == "preferred"
+    api_part_type = "base" if preferred else part_type
+    payload = EasyedaApi(use_cache=False).search_jlcpcb_components(
+        normalized,
+        page_size=page_size,
+        part_type=api_part_type,
+        preferred=preferred,
     )
+    candidates = list(payload.get("results", []))
+    catalog_total = int(payload.get("total", 0) or 0)
+    # Load complete, reasonably-sized result sets. Huge Extended searches stay
+    # capped so a broad term cannot trigger hundreds of sequential requests.
+    if len(candidates) < catalog_total <= 500:
+        api = EasyedaApi(use_cache=False)
+        for page in range(2, math.ceil(catalog_total / page_size) + 1):
+            next_payload = api.search_jlcpcb_components(
+                normalized,
+                page=page,
+                page_size=page_size,
+                part_type=api_part_type,
+                preferred=preferred,
+            )
+            candidates.extend(next_payload.get("results", []))
+    candidates = list(
+        {str(part.get("lcsc", "")): part for part in candidates}.values()
+    )
+    filtered = filter_component_results(query, candidates)
+    return {
+        "total": len(filtered),
+        "catalog_total": catalog_total,
+        "candidate_count": len(candidates),
+        "results": filtered,
+    }
 
 
 def _metadata_fields(part: dict[str, Any]) -> dict[str, str]:
