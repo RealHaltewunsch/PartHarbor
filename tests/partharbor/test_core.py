@@ -10,6 +10,7 @@ from partharbor.core import (
     format_price_tiers,
     normalize_component_query,
     normalize_lcsc_ids,
+    plan_catalog_sync,
     search_local_symbols,
 )
 
@@ -67,3 +68,23 @@ def test_local_symbol_search(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert search_local_symbols("100n C1591", library)[0]["name"] == "CL10B104"
+
+
+def test_catalog_sync_plan_imports_difference_or_overwrites(tmp_path: Path) -> None:
+    library = tmp_path / "parts.kicad_sym"
+    library.write_text(
+        '(kicad_symbol_lib\n\t(symbol "Existing"\n'
+        '\t\t(property "LCSC Part" "C1")\n\t)\n)',
+        encoding="utf-8",
+    )
+    parts = [
+        {"lcsc": "C1", "type": "Basic"},
+        {"lcsc": "C2", "type": "Preferred"},
+    ]
+    difference = plan_catalog_sync(parts, library, overwrite=False)
+    overwrite = plan_catalog_sync(parts, library, overwrite=True)
+    assert difference.missing_ids == ["C2"]
+    assert difference.import_ids == ["C2"]
+    assert overwrite.import_ids == ["C1", "C2"]
+    assert difference.basic_count == 1
+    assert difference.preferred_count == 1

@@ -24,6 +24,8 @@ AGPL-3.0.
 - C-number is written as `LCSC Part` and `ki_keywords`, so KiCad's symbol chooser
   can find an imported part by its C-number
 - Self-contained KiCad Plugin and Content Manager (PCM) package
+- Full-catalogue sync for all Basic and/or Preferred parts, with local diffing
+  and optional overwrite of existing parts
 
 ## Run from the source tree on macOS
 
@@ -40,7 +42,7 @@ python3 scripts/build_pcm.py
 ```
 
 In KiCad, open **Plugin and Content Manager**, choose **Install from File**, and
-select `dist/partharbor-0.1.2-pcm.zip`. The action appears under
+select `dist/partharbor-0.2.0-pcm.zip`. The action appears under
 **PCB Editor → Tools → External Plugins** and can be enabled as a toolbar icon.
 
 KiCad 10.0.3 still exposes Python Action Plugins only in PCB Editor, not in

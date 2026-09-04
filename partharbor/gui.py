@@ -8,12 +8,15 @@ from typing import Any
 import wx
 
 from .core import (
+    CatalogSyncPlan,
     ImportOptions,
     default_library_base,
+    fetch_jlcpcb_catalog,
     format_price,
     format_price_tiers,
     import_components,
     normalize_lcsc_ids,
+    plan_catalog_sync,
     search_jlcpcb,
     search_local_symbols,
 )
@@ -23,6 +26,7 @@ class PartHarborFrame(wx.Frame):
     def __init__(self, parent: wx.Window | None = None) -> None:
         super().__init__(parent, title="PartHarbor", size=(1220, 760))
         self.remote_results: list[dict[str, Any]] = []
+        self._busy = False
         self._build_ui()
         self.Centre()
 
@@ -37,6 +41,7 @@ class PartHarborFrame(wx.Frame):
         notebook = wx.Notebook(panel)
         notebook.AddPage(self._search_page(notebook), "JLCPCB Search")
         notebook.AddPage(self._direct_page(notebook), "Import C-Numbers")
+        notebook.AddPage(self._catalog_page(notebook), "Catalog Sync")
         notebook.AddPage(self._local_page(notebook), "Local Library")
         outer.Add(notebook, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 12)
 
@@ -65,6 +70,8 @@ class PartHarborFrame(wx.Frame):
 
         self.status = wx.StaticText(panel, label="Ready")
         outer.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
+        self.progress = wx.Gauge(panel, range=100)
+        outer.Add(self.progress, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
         panel.SetSizer(outer)
 
     def _search_page(self, parent: wx.Window) -> wx.Panel:
@@ -152,6 +159,45 @@ class PartHarborFrame(wx.Frame):
         panel.SetSizer(layout)
         return panel
 
+    def _catalog_page(self, parent: wx.Window) -> wx.Panel:
+        panel = wx.Panel(parent)
+        layout = wx.BoxSizer(wx.VERTICAL)
+        explanation = wx.StaticText(
+            panel,
+            label=(
+                "Download the current JLCPCB catalogue, compare its C-numbers with "
+                "the local symbol library, and import the difference. If ‘Overwrite "
+                "existing parts’ is enabled below, existing catalogue parts are updated too."
+            ),
+        )
+        explanation.Wrap(900)
+        layout.Add(explanation, 0, wx.ALL, 12)
+
+        choices = wx.BoxSizer(wx.HORIZONTAL)
+        self.sync_basic = wx.CheckBox(panel, label="Include all Basic parts")
+        self.sync_preferred = wx.CheckBox(panel, label="Include all Preferred parts")
+        self.sync_basic.SetValue(True)
+        choices.Add(self.sync_basic, 0, wx.RIGHT, 24)
+        choices.Add(self.sync_preferred)
+        layout.Add(choices, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
+
+        warning = wx.StaticText(
+            panel,
+            label=(
+                "A full sync can import hundreds or more than a thousand parts and may "
+                "take a long time when 3D models are enabled. You will see exact counts "
+                "and must confirm before downloads start."
+            ),
+        )
+        warning.Wrap(900)
+        layout.Add(warning, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
+
+        button = wx.Button(panel, label="Check Online Catalogue and Sync…")
+        button.Bind(wx.EVT_BUTTON, self._prepare_catalog_sync)
+        layout.Add(button, 0, wx.LEFT | wx.BOTTOM, 12)
+        panel.SetSizer(layout)
+        return panel
+
     def _options(self) -> ImportOptions:
         return ImportOptions(
             symbol=self.symbol.GetValue(),
@@ -169,17 +215,29 @@ class PartHarborFrame(wx.Frame):
                 self.output.SetValue(str(folder / folder.name))
 
     def _run(self, label: str, job: Any, done: Any) -> None:
+        if self._busy:
+            self._show_error("Another PartHarbor operation is already running.")
+            return
+        self._busy = True
         self.status.SetLabel(label)
 
         def worker() -> None:
             try:
                 value = job()
             except Exception as exc:  # GUI boundary: show actionable error
-                wx.CallAfter(self._show_error, str(exc))
+                wx.CallAfter(self._job_failed, str(exc))
             else:
-                wx.CallAfter(done, value)
+                wx.CallAfter(self._job_done, done, value)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _job_done(self, done: Any, value: Any) -> None:
+        self._busy = False
+        done(value)
+
+    def _job_failed(self, message: str) -> None:
+        self._busy = False
+        self._show_error(message)
 
     def _show_error(self, message: str) -> None:
         self.status.SetLabel("Error")
@@ -238,24 +296,118 @@ class PartHarborFrame(wx.Frame):
     def _import_direct(self, _event: wx.CommandEvent) -> None:
         self._start_import(normalize_lcsc_ids(self.ids.GetValue()))
 
-    def _start_import(self, ids: list[str]) -> None:
+    def _start_import(
+        self,
+        ids: list[str],
+        metadata_by_id: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         options = self._options()
+        self.progress.SetRange(max(len(ids), 1))
+        self.progress.SetValue(0)
+        completed = 0
+
+        def progress(part_id: str, _success: bool) -> None:
+            nonlocal completed
+            completed += 1
+            wx.CallAfter(self.progress.SetValue, completed)
+            wx.CallAfter(
+                self.status.SetLabel,
+                f"Processed {completed} of {len(ids)} catalogue parts — {part_id}",
+            )
+
         self._run(
             f"Importing {len(ids)} part(s) …",
-            lambda: import_components(ids, options),
+            lambda: import_components(
+                ids,
+                options,
+                progress=progress,
+                metadata_by_id=metadata_by_id,
+            ),
             self._import_done,
         )
+
+    def _prepare_catalog_sync(self, _event: wx.CommandEvent) -> None:
+        include_basic = self.sync_basic.GetValue()
+        include_preferred = self.sync_preferred.GetValue()
+        options = self._options()
+        self.progress.SetRange(100)
+        self.progress.SetValue(0)
+
+        def catalog_progress(loaded: int, total: int) -> None:
+            wx.CallAfter(self.progress.SetRange, max(total, 1))
+            wx.CallAfter(self.progress.SetValue, min(loaded, max(total, 1)))
+            wx.CallAfter(
+                self.status.SetLabel,
+                f"Loading online catalogue: {loaded} of {total}",
+            )
+
+        def job() -> CatalogSyncPlan:
+            parts = fetch_jlcpcb_catalog(
+                include_basic,
+                include_preferred,
+                progress=catalog_progress,
+            )
+            return plan_catalog_sync(
+                parts,
+                Path(f"{options.output}.kicad_sym"),
+                options.overwrite,
+            )
+
+        self._run("Loading the current JLCPCB catalogue …", job, self._confirm_catalog_sync)
+
+    def _confirm_catalog_sync(self, plan: CatalogSyncPlan) -> None:
+        existing_selected = len(plan.parts) - len(plan.missing_ids)
+        message = (
+            f"Online selection: {len(plan.parts):,} parts\n"
+            f"  Basic: {plan.basic_count:,}\n"
+            f"  Preferred: {plan.preferred_count:,}\n"
+            f"Already present locally: {existing_selected:,}\n"
+            f"Missing locally: {len(plan.missing_ids):,}\n\n"
+            f"Parts to import now: {len(plan.import_ids):,}\n"
+        )
+        if self.overwrite.GetValue():
+            message += "Overwrite is enabled: existing selected parts will be re-imported.\n"
+        else:
+            message += "Overwrite is disabled: only missing parts will be imported.\n"
+        message += "\nContinue?"
+        if not plan.import_ids:
+            wx.MessageBox(
+                message.replace("\nContinue?", "\nThe local library is up to date."),
+                "PartHarbor Catalogue Sync",
+                wx.OK | wx.ICON_INFORMATION,
+                self,
+            )
+            self.status.SetLabel("Local catalogue is up to date")
+            return
+        if wx.MessageBox(
+            message,
+            "PartHarbor Catalogue Sync",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self,
+        ) != wx.YES:
+            self.status.SetLabel("Catalogue sync cancelled")
+            return
+        metadata = {str(part["lcsc"]): part for part in plan.parts}
+        self._start_import(plan.import_ids, metadata)
 
     def _import_done(self, result: dict[str, bool]) -> None:
         ok = [part_id for part_id, success in result.items() if success]
         failed = [part_id for part_id, success in result.items() if not success]
-        message = f"Imported: {', '.join(ok) or '—'}"
+        message = f"Imported: {len(ok):,}\n{self._summarize_ids(ok)}"
         if failed:
-            message += f"\nFailed/skipped: {', '.join(failed)}"
+            message += f"\n\nFailed/skipped: {len(failed):,}\n{self._summarize_ids(failed)}"
             message += "\nThe part may already exist. Enable ‘Overwrite existing parts’ to update it."
         message += "\n\nReload the symbol libraries in KiCad if needed. The C-number is stored as a search keyword."
         self.status.SetLabel(message.splitlines()[0])
         wx.MessageBox(message, "PartHarbor", wx.OK | (wx.ICON_WARNING if failed else wx.ICON_INFORMATION), self)
+
+    @staticmethod
+    def _summarize_ids(ids: list[str], limit: int = 20) -> str:
+        if not ids:
+            return "—"
+        visible = ", ".join(ids[:limit])
+        remaining = len(ids) - limit
+        return f"{visible} … and {remaining:,} more" if remaining > 0 else visible
 
     def _open_selected(self, _event: wx.CommandEvent) -> None:
         part = self._selected_remote()

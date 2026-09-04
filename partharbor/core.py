@@ -159,6 +159,16 @@ class ImportOptions:
             raise ValueError("Select at least a symbol, footprint, or 3D model.")
 
 
+@dataclass(frozen=True)
+class CatalogSyncPlan:
+    parts: list[dict[str, Any]]
+    local_ids: set[str]
+    missing_ids: list[str]
+    import_ids: list[str]
+    basic_count: int
+    preferred_count: int
+
+
 def converter_arguments(options: ImportOptions) -> dict[str, Any]:
     options.validate()
     output = options.output.expanduser()
@@ -184,6 +194,7 @@ def import_components(
     ids: Iterable[str],
     options: ImportOptions,
     progress: Callable[[str, bool], None] | None = None,
+    metadata_by_id: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, bool]:
     normalized = normalize_lcsc_ids(ids)
     if not normalized:
@@ -192,17 +203,100 @@ def import_components(
     api = EasyedaApi(use_cache=options.use_cache)
     result: dict[str, bool] = {}
     for part_id in normalized:
-        metadata = api.search_jlcpcb_components(part_id, page_size=20)
-        exact = next(
-            (part for part in metadata.get("results", []) if part.get("lcsc") == part_id),
-            None,
-        )
+        exact = (metadata_by_id or {}).get(part_id)
+        if exact is None:
+            metadata = api.search_jlcpcb_components(part_id, page_size=20)
+            exact = next(
+                (part for part in metadata.get("results", []) if part.get("lcsc") == part_id),
+                None,
+            )
         arguments["custom_fields"] = _metadata_fields(exact) if exact else {}
         ok = _process_component(part_id, arguments, api)
         result[part_id] = ok
         if progress:
             progress(part_id, ok)
     return result
+
+
+def fetch_jlcpcb_catalog(
+    include_basic: bool,
+    include_preferred: bool,
+    page_size: int = 100,
+    progress: Callable[[int, int], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch the complete current Basic and/or Preferred component catalogue."""
+    if not include_basic and not include_preferred:
+        raise ValueError("Select Basic parts, Preferred parts, or both.")
+    api = EasyedaApi(use_cache=False)
+    first = api.search_jlcpcb_components(
+        "",
+        page=1,
+        page_size=page_size,
+        part_type="base",
+        preferred=include_preferred,
+    )
+    total = int(first.get("total", 0) or 0)
+    candidates = list(first.get("results", []))
+    if progress:
+        progress(len(candidates), total)
+    for page in range(2, math.ceil(total / page_size) + 1):
+        payload = api.search_jlcpcb_components(
+            "",
+            page=page,
+            page_size=page_size,
+            part_type="base",
+            preferred=include_preferred,
+        )
+        candidates.extend(payload.get("results", []))
+        if progress:
+            progress(min(len(candidates), total), total)
+
+    unique = {
+        str(part.get("lcsc")): part
+        for part in candidates
+        if str(part.get("lcsc", "")).startswith("C")
+    }
+    if total <= 0:
+        raise RuntimeError("JLCPCB returned an empty catalogue; sync was not started.")
+    if len(unique) < total:
+        raise RuntimeError(
+            f"JLCPCB catalogue download was incomplete ({len(unique)} of {total}); "
+            "sync was not started. Please try again."
+        )
+    selected = [
+        part
+        for part in unique.values()
+        if (include_basic and part.get("type") == "Basic")
+        or (include_preferred and part.get("type") == "Preferred")
+    ]
+    return filter_component_results("", selected)
+
+
+def plan_catalog_sync(
+    parts: Iterable[dict[str, Any]],
+    symbol_library: Path,
+    overwrite: bool,
+) -> CatalogSyncPlan:
+    unique = {
+        str(part.get("lcsc")): part
+        for part in parts
+        if str(part.get("lcsc", "")).startswith("C")
+    }
+    local_ids = {
+        part["lcsc"] for part in index_local_symbols(symbol_library) if part["lcsc"]
+    }
+    ordered_ids = list(unique)
+    missing_ids = [part_id for part_id in ordered_ids if part_id not in local_ids]
+    return CatalogSyncPlan(
+        parts=[unique[part_id] for part_id in ordered_ids],
+        local_ids=local_ids,
+        missing_ids=missing_ids,
+        import_ids=ordered_ids if overwrite else missing_ids,
+        basic_count=sum(part.get("type") == "Basic" for part in unique.values()),
+        preferred_count=sum(
+            part.get("type") == "Preferred" for part in unique.values()
+        ),
+    )
 
 
 def search_jlcpcb(
