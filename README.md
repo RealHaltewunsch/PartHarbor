@@ -38,7 +38,7 @@ python3 scripts/build_pcm.py
 ```
 
 In KiCad, open **Plugin and Content Manager**, choose **Install from File**, and
-select `dist/partharbor-0.1.0-pcm.zip`. The action appears under
+select `dist/partharbor-0.1.1-pcm.zip`. The action appears under
 **PCB Editor → Tools → External Plugins** and can be enabled as a toolbar icon.
 
 KiCad 10.0.3 still exposes Python Action Plugins only in PCB Editor, not in

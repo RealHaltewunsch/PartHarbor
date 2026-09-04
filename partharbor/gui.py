@@ -10,6 +10,8 @@ import wx
 from .core import (
     ImportOptions,
     default_library_base,
+    format_price,
+    format_price_tiers,
     import_components,
     normalize_lcsc_ids,
     search_jlcpcb,
@@ -19,7 +21,7 @@ from .core import (
 
 class PartHarborFrame(wx.Frame):
     def __init__(self, parent: wx.Window | None = None) -> None:
-        super().__init__(parent, title="PartHarbor", size=(980, 700))
+        super().__init__(parent, title="PartHarbor", size=(1220, 760))
         self.remote_results: list[dict[str, Any]] = []
         self._build_ui()
         self.Centre()
@@ -33,17 +35,17 @@ class PartHarborFrame(wx.Frame):
         outer.Add(title, 0, wx.ALL, 12)
 
         notebook = wx.Notebook(panel)
-        notebook.AddPage(self._search_page(notebook), "JLCPCB-Suche")
-        notebook.AddPage(self._direct_page(notebook), "C-Nummern importieren")
-        notebook.AddPage(self._local_page(notebook), "Lokale Bibliothek")
+        notebook.AddPage(self._search_page(notebook), "JLCPCB Search")
+        notebook.AddPage(self._direct_page(notebook), "Import C-Numbers")
+        notebook.AddPage(self._local_page(notebook), "Local Library")
         outer.Add(notebook, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 12)
 
-        settings = wx.StaticBoxSizer(wx.VERTICAL, panel, "Importoptionen")
+        settings = wx.StaticBoxSizer(wx.VERTICAL, panel, "Import Options")
         path_row = wx.BoxSizer(wx.HORIZONTAL)
-        path_row.Add(wx.StaticText(panel, label="Bibliotheksbasis:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+        path_row.Add(wx.StaticText(panel, label="Library base:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
         self.output = wx.TextCtrl(panel, value=str(default_library_base()))
         path_row.Add(self.output, 1, wx.RIGHT, 6)
-        choose = wx.Button(panel, label="Auswählen…")
+        choose = wx.Button(panel, label="Browse…")
         choose.Bind(wx.EVT_BUTTON, self._choose_output)
         path_row.Add(choose)
         settings.Add(path_row, 0, wx.EXPAND | wx.ALL, 8)
@@ -51,9 +53,9 @@ class PartHarborFrame(wx.Frame):
         option_row = wx.BoxSizer(wx.HORIZONTAL)
         self.symbol = wx.CheckBox(panel, label="Symbol")
         self.footprint = wx.CheckBox(panel, label="Footprint")
-        self.model_3d = wx.CheckBox(panel, label="3D-Modell")
-        self.overwrite = wx.CheckBox(panel, label="Vorhandene Teile überschreiben")
-        self.cache = wx.CheckBox(panel, label="Downloads cachen")
+        self.model_3d = wx.CheckBox(panel, label="3D Model")
+        self.overwrite = wx.CheckBox(panel, label="Overwrite existing parts")
+        self.cache = wx.CheckBox(panel, label="Cache downloads")
         for checkbox in (self.symbol, self.footprint, self.model_3d, self.cache):
             checkbox.SetValue(True)
         for checkbox in (self.symbol, self.footprint, self.model_3d, self.overwrite, self.cache):
@@ -61,7 +63,7 @@ class PartHarborFrame(wx.Frame):
         settings.Add(option_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
         outer.Add(settings, 0, wx.EXPAND | wx.ALL, 12)
 
-        self.status = wx.StaticText(panel, label="Bereit")
+        self.status = wx.StaticText(panel, label="Ready")
         outer.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
         panel.SetSizer(outer)
 
@@ -72,27 +74,44 @@ class PartHarborFrame(wx.Frame):
         self.query = wx.TextCtrl(panel, value="100n 0402 16v", style=wx.TE_PROCESS_ENTER)
         self.query.Bind(wx.EVT_TEXT_ENTER, self._search_remote)
         row.Add(self.query, 1, wx.RIGHT, 8)
-        self.part_type = wx.Choice(panel, choices=["Basic / Preferred", "Alle", "Extended"])
+        self.part_type = wx.Choice(panel, choices=["Basic / Preferred", "All", "Extended"])
         self.part_type.SetSelection(0)
         row.Add(self.part_type, 0, wx.RIGHT, 8)
-        search = wx.Button(panel, label="Suchen")
+        search = wx.Button(panel, label="Search")
         search.Bind(wx.EVT_BUTTON, self._search_remote)
         row.Add(search)
         layout.Add(row, 0, wx.EXPAND | wx.ALL, 8)
 
         self.results = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
         for idx, (label, width) in enumerate(
-            [("LCSC", 90), ("Typ", 90), ("Bestand", 90), ("Gehäuse", 110), ("Herstellerteil", 185), ("Beschreibung", 330)]
+            [
+                ("LCSC", 85),
+                ("Type", 80),
+                ("Stock", 95),
+                ("Package", 90),
+                ("MPN", 170),
+                ("Price", 120),
+                ("Main characteristics", 470),
+            ]
         ):
             self.results.InsertColumn(idx, label, width=width)
         self.results.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._import_selected)
         layout.Add(self.results, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
 
+        self.details = wx.TextCtrl(
+            panel,
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.BORDER_SIMPLE,
+            size=(-1, 105),
+        )
+        self.details.SetHint("Select a component to see its complete characteristics and price tiers.")
+        self.results.Bind(wx.EVT_LIST_ITEM_SELECTED, self._show_selected_details)
+        layout.Add(self.details, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 8)
+
         buttons = wx.BoxSizer(wx.HORIZONTAL)
-        import_button = wx.Button(panel, label="Ausgewähltes Teil importieren")
+        import_button = wx.Button(panel, label="Import Selected Part")
         import_button.Bind(wx.EVT_BUTTON, self._import_selected)
         buttons.Add(import_button, 0, wx.RIGHT, 8)
-        details = wx.Button(panel, label="LCSC-Seite öffnen")
+        details = wx.Button(panel, label="Open LCSC Page")
         details.Bind(wx.EVT_BUTTON, self._open_selected)
         buttons.Add(details)
         layout.Add(buttons, 0, wx.ALL, 8)
@@ -102,10 +121,10 @@ class PartHarborFrame(wx.Frame):
     def _direct_page(self, parent: wx.Window) -> wx.Panel:
         panel = wx.Panel(parent)
         layout = wx.BoxSizer(wx.VERTICAL)
-        layout.Add(wx.StaticText(panel, label="Eine oder mehrere C-Nummern (Leerzeichen, Komma oder Zeilenumbruch):"), 0, wx.ALL, 8)
+        layout.Add(wx.StaticText(panel, label="One or more C-numbers (separated by spaces, commas, or new lines):"), 0, wx.ALL, 8)
         self.ids = wx.TextCtrl(panel, style=wx.TE_MULTILINE, value="C2040")
         layout.Add(self.ids, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 8)
-        button = wx.Button(panel, label="Importieren")
+        button = wx.Button(panel, label="Import")
         button.Bind(wx.EVT_BUTTON, self._import_direct)
         layout.Add(button, 0, wx.ALL, 8)
         panel.SetSizer(layout)
@@ -116,16 +135,16 @@ class PartHarborFrame(wx.Frame):
         layout = wx.BoxSizer(wx.VERTICAL)
         row = wx.BoxSizer(wx.HORIZONTAL)
         self.local_query = wx.TextCtrl(panel, style=wx.TE_PROCESS_ENTER)
-        self.local_query.SetHint("C2040, Bauteilname, Beschreibung …")
+        self.local_query.SetHint("C2040, part name, description …")
         self.local_query.Bind(wx.EVT_TEXT_ENTER, self._search_local)
         row.Add(self.local_query, 1, wx.RIGHT, 8)
-        button = wx.Button(panel, label="Lokal suchen")
+        button = wx.Button(panel, label="Search Local Library")
         button.Bind(wx.EVT_BUTTON, self._search_local)
         row.Add(button)
         layout.Add(row, 0, wx.EXPAND | wx.ALL, 8)
         self.local_results = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
         for idx, (label, width) in enumerate(
-            [("LCSC", 100), ("Symbol", 230), ("Footprint", 250), ("Beschreibung", 330)]
+            [("LCSC", 100), ("Symbol", 230), ("Footprint", 250), ("Description", 430)]
         ):
             self.local_results.InsertColumn(idx, label, width=width)
         layout.Add(self.local_results, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
@@ -143,7 +162,7 @@ class PartHarborFrame(wx.Frame):
         )
 
     def _choose_output(self, _event: wx.CommandEvent) -> None:
-        with wx.DirDialog(self, "Bibliotheksordner auswählen") as dialog:
+        with wx.DirDialog(self, "Select library folder") as dialog:
             if dialog.ShowModal() == wx.ID_OK:
                 folder = Path(dialog.GetPath())
                 self.output.SetValue(str(folder / folder.name))
@@ -162,22 +181,42 @@ class PartHarborFrame(wx.Frame):
         threading.Thread(target=worker, daemon=True).start()
 
     def _show_error(self, message: str) -> None:
-        self.status.SetLabel("Fehler")
+        self.status.SetLabel("Error")
         wx.MessageBox(message, "PartHarbor", wx.OK | wx.ICON_ERROR, self)
 
     def _search_remote(self, _event: wx.CommandEvent) -> None:
         kind = ["base", None, "expand"][self.part_type.GetSelection()]
-        self._run("JLCPCB wird durchsucht …", lambda: search_jlcpcb(self.query.GetValue(), kind), self._show_remote)
+        self._run("Searching JLCPCB …", lambda: search_jlcpcb(self.query.GetValue(), kind), self._show_remote)
 
     def _show_remote(self, payload: dict[str, Any]) -> None:
         self.remote_results = payload.get("results", [])
         self.results.DeleteAllItems()
         for part in self.remote_results:
             row = self.results.InsertItem(self.results.GetItemCount(), str(part.get("lcsc", "")))
-            values = [part.get("type", ""), part.get("stock", 0), part.get("package", ""), part.get("model", ""), part.get("name", "")]
+            values = [
+                part.get("type", ""),
+                f"{part.get('stock', 0):,}",
+                part.get("package", ""),
+                part.get("model", ""),
+                format_price(part),
+                part.get("description", "") or part.get("name", ""),
+            ]
             for column, value in enumerate(values, 1):
                 self.results.SetItem(row, column, str(value))
-        self.status.SetLabel(f"{len(self.remote_results)} von {payload.get('total', 0)} Treffern geladen")
+        self.status.SetLabel(f"Loaded {len(self.remote_results)} of {payload.get('total', 0)} results")
+
+    def _show_selected_details(self, event: wx.ListEvent) -> None:
+        index = event.GetIndex()
+        if not 0 <= index < len(self.remote_results):
+            return
+        part = self.remote_results[index]
+        self.details.SetValue(
+            f"{part.get('lcsc', '')} — {part.get('name', '')}\n"
+            f"Main characteristics: {part.get('description', '')}\n"
+            f"Category: {part.get('category', '')}    Package: {part.get('package', '')}    "
+            f"Stock: {part.get('stock', 0):,}\n"
+            f"Price tiers: {format_price_tiers(part)}"
+        )
 
     def _selected_remote(self) -> dict[str, Any] | None:
         index = self.results.GetFirstSelected()
@@ -186,7 +225,7 @@ class PartHarborFrame(wx.Frame):
     def _import_selected(self, _event: wx.CommandEvent) -> None:
         part = self._selected_remote()
         if not part:
-            self._show_error("Bitte zuerst einen Treffer auswählen.")
+            self._show_error("Select a search result first.")
             return
         self._start_import([part["lcsc"]])
 
@@ -196,7 +235,7 @@ class PartHarborFrame(wx.Frame):
     def _start_import(self, ids: list[str]) -> None:
         options = self._options()
         self._run(
-            f"Importiere {len(ids)} Bauteil(e) …",
+            f"Importing {len(ids)} part(s) …",
             lambda: import_components(ids, options),
             self._import_done,
         )
@@ -204,10 +243,11 @@ class PartHarborFrame(wx.Frame):
     def _import_done(self, result: dict[str, bool]) -> None:
         ok = [part_id for part_id, success in result.items() if success]
         failed = [part_id for part_id, success in result.items() if not success]
-        message = f"Importiert: {', '.join(ok) or '–'}"
+        message = f"Imported: {', '.join(ok) or '—'}"
         if failed:
-            message += f"\nFehlgeschlagen/übersprungen: {', '.join(failed)}"
-        message += "\n\nIn KiCad ggf. Symbolbibliotheken neu laden. Die C-Nummer ist als Suchbegriff hinterlegt."
+            message += f"\nFailed/skipped: {', '.join(failed)}"
+            message += "\nThe part may already exist. Enable ‘Overwrite existing parts’ to update it."
+        message += "\n\nReload the symbol libraries in KiCad if needed. The C-number is stored as a search keyword."
         self.status.SetLabel(message.splitlines()[0])
         wx.MessageBox(message, "PartHarbor", wx.OK | (wx.ICON_WARNING if failed else wx.ICON_INFORMATION), self)
 
@@ -224,7 +264,7 @@ class PartHarborFrame(wx.Frame):
             row = self.local_results.InsertItem(self.local_results.GetItemCount(), part["lcsc"])
             for column, key in enumerate(("name", "footprint", "description"), 1):
                 self.local_results.SetItem(row, column, part[key])
-        self.status.SetLabel(f"{len(matches)} lokale Treffer")
+        self.status.SetLabel(f"{len(matches)} local results")
 
 
 _window: PartHarborFrame | None = None

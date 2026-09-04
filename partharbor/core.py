@@ -13,6 +13,14 @@ LCSC_ID_RE = re.compile(r"\bC\d+\b", re.IGNORECASE)
 CAPACITANCE_RE = re.compile(r"^(\d+(?:[.,]\d+)?)(p|n|u|µ)$", re.IGNORECASE)
 RESISTANCE_RE = re.compile(r"^(\d+(?:[.,]\d+)?)(k)$", re.IGNORECASE)
 VOLTAGE_RE = re.compile(r"^(\d+(?:[.,]\d+)?)v$", re.IGNORECASE)
+QUERY_SYNONYMS = {
+    "nmos": "N-channel MOSFET",
+    "n-mos": "N-channel MOSFET",
+    "nmosfet": "N-channel MOSFET",
+    "pmos": "P-channel MOSFET",
+    "p-mos": "P-channel MOSFET",
+    "pmosfet": "P-channel MOSFET",
+}
 
 
 def default_library_base() -> Path:
@@ -40,7 +48,10 @@ def normalize_component_query(query: str) -> str:
         cap = CAPACITANCE_RE.match(token)
         resistance = RESISTANCE_RE.match(token)
         voltage = VOLTAGE_RE.match(token)
-        if cap:
+        synonym = QUERY_SYNONYMS.get(token.casefold())
+        if synonym:
+            normalized.append(synonym)
+        elif cap:
             normalized.append(f"{cap.group(1)}{cap.group(2)}F")
         elif resistance:
             normalized.append(f"{resistance.group(1)}{resistance.group(2)}Ω")
@@ -49,6 +60,39 @@ def normalize_component_query(query: str) -> str:
         else:
             normalized.append(token)
     return " ".join(normalized)
+
+
+def format_price(part: dict[str, Any]) -> str:
+    """Format the first available price tier without inventing a currency."""
+    price = part.get("price")
+    quantity = part.get("min_qty", 1)
+    tiers = part.get("price_breaks") or []
+    if price is None and tiers:
+        price = tiers[0].get("price")
+        quantity = tiers[0].get("qty", quantity)
+    if price is None:
+        return "Unavailable" if part.get("stock", 0) else "—"
+    try:
+        value = f"{float(price):.8f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        value = str(price)
+    return f"{value} @ {quantity}+"
+
+
+def format_price_tiers(part: dict[str, Any]) -> str:
+    tiers = part.get("price_breaks") or []
+    if not tiers:
+        return format_price(part)
+    return " | ".join(
+        format_price(
+            {
+                "price": tier.get("price"),
+                "min_qty": tier.get("qty", 1),
+                "stock": part.get("stock", 0),
+            }
+        )
+        for tier in tiers
+    )
 
 
 @dataclass(frozen=True)
@@ -62,7 +106,7 @@ class ImportOptions:
 
     def validate(self) -> None:
         if not any((self.symbol, self.footprint, self.model_3d)):
-            raise ValueError("Mindestens Symbol, Footprint oder 3D-Modell auswählen.")
+            raise ValueError("Select at least a symbol, footprint, or 3D model.")
 
 
 def converter_arguments(options: ImportOptions) -> dict[str, Any]:
@@ -93,7 +137,7 @@ def import_components(
 ) -> dict[str, bool]:
     normalized = normalize_lcsc_ids(ids)
     if not normalized:
-        raise ValueError("Keine gültige LCSC-Nummer gefunden (Beispiel: C2040).")
+        raise ValueError("No valid LCSC number found (example: C2040).")
     arguments = converter_arguments(options)
     api = EasyedaApi(use_cache=options.use_cache)
     result: dict[str, bool] = {}
@@ -115,7 +159,7 @@ def search_jlcpcb(
     query: str, part_type: str | None = "base", page_size: int = 50
 ) -> dict[str, Any]:
     if not query.strip():
-        raise ValueError("Bitte einen Suchbegriff eingeben.")
+        raise ValueError("Enter a search term.")
     normalized = normalize_component_query(query.strip())
     return EasyedaApi(use_cache=False).search_jlcpcb_components(
         normalized, page_size=page_size, part_type=part_type

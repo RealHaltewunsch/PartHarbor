@@ -5,6 +5,8 @@ import pytest
 from partharbor.core import (
     ImportOptions,
     converter_arguments,
+    format_price,
+    format_price_tiers,
     normalize_component_query,
     normalize_lcsc_ids,
     search_local_symbols,
@@ -18,6 +20,23 @@ def test_normalize_lcsc_ids() -> None:
 def test_normalize_component_query() -> None:
     assert normalize_component_query("100n 0402 16v") == "100nF 0402 16V"
     assert normalize_component_query("10k 0603") == "10kΩ 0603"
+    assert normalize_component_query("NMOS 30V") == "N-channel MOSFET 30V"
+    assert normalize_component_query("pmos 20v") == "P-channel MOSFET 20V"
+
+
+def test_price_formatting() -> None:
+    part = {
+        "price": 0.0173,
+        "min_qty": 1,
+        "stock": 264739,
+        "price_breaks": [
+            {"qty": 1, "price": 0.0173},
+            {"qty": 500, "price": 0.0136},
+        ],
+    }
+    assert format_price(part) == "0.0173 @ 1+"
+    assert format_price_tiers(part) == "0.0173 @ 1+ | 0.0136 @ 500+"
+    assert format_price({"stock": 10}) == "Unavailable"
 
 
 def test_options_require_one_asset(tmp_path: Path) -> None:
