@@ -17,7 +17,9 @@ class PartHarborAction(pcbnew.ActionPlugin):
     def defaults(self) -> None:
         self.name = "PartHarbor"
         self.category = "Library"
-        self.description = "Search and import LCSC/JLCPCB components into KiCad"
+        self.description = (
+            "Synchronize all JLCPCB Basic/Preferred parts and import components into KiCad"
+        )
         self.show_toolbar_button = True
         self.icon_file_name = str(PLUGIN_ROOT / "icon.png")
 

@@ -2,10 +2,16 @@
 
 ![PartHarbor icon](assets/partharbor-logo.png)
 
-PartHarbor is a graphical component search and importer for KiCad. Search the
-current JLCPCB catalogue using terms such as `100n 0402 16v`, prefer Basic
-parts, or paste one or more LCSC C-numbers. The selected symbol, footprint and
-3D model are converted and stored in the existing
+PartHarbor is a graphical JLCPCB component catalogue and importer for KiCad.
+Its key feature is **one-click synchronization of every currently available
+JLCPCB Basic and/or Preferred component** into a local KiCad library. PartHarbor
+checks the live online catalogue, compares all C-numbers with the local library,
+and imports only the missing components—or refreshes the complete selection when
+overwrite is enabled.
+
+You can also search the current catalogue using terms such as `100n 0402 16v`
+or import one or more LCSC C-numbers directly. Symbols, footprints, and 3D
+models are converted and stored in the existing
 `~/Documents/KiCad/easyeda2kicad` library by default.
 
 PartHarbor is based on [uPesy's easyeda2kicad.py](https://github.com/uPesy/easyeda2kicad.py).
@@ -14,6 +20,9 @@ AGPL-3.0.
 
 ## Current features
 
+- **Synchronize the complete live JLCPCB Basic and/or Preferred catalogue**
+- Compare online C-numbers with the local library and import only the difference
+- Optionally overwrite and refresh all locally available catalogue components
 - Live JLCPCB search with Basic/Preferred, all, and Extended filters
 - Strict client-side package filtering, so a `0402` query cannot return `1206`
 - Electronics-aware aliases such as `NMOS` → `N-channel MOSFET`
@@ -24,8 +33,6 @@ AGPL-3.0.
 - C-number is written as `LCSC Part` and `ki_keywords`, so KiCad's symbol chooser
   can find an imported part by its C-number
 - Self-contained KiCad Plugin and Content Manager (PCM) package
-- Full-catalogue sync for all Basic and/or Preferred parts, with local diffing
-  and optional overwrite of existing parts
 
 ## Run from the source tree on macOS
 
@@ -42,7 +49,7 @@ python3 scripts/build_pcm.py
 ```
 
 In KiCad, open **Plugin and Content Manager**, choose **Install from File**, and
-select `dist/partharbor-0.2.0-pcm.zip`. The action appears under
+select `dist/partharbor-0.2.1-pcm.zip`. The action appears under
 **PCB Editor → Tools → External Plugins** and can be enabled as a toolbar icon.
 
 KiCad 10.0.3 still exposes Python Action Plugins only in PCB Editor, not in

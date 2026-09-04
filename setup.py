@@ -17,7 +17,7 @@ with open("partharbor/__init__.py") as fh:
 setup(
     name="partharbor",
     description=(
-        "A graphical LCSC/JLCPCB search and EasyEDA-to-KiCad component importer"
+        "Synchronize all JLCPCB Basic/Preferred parts and import components into KiCad"
     ),
     long_description=long_description,
     long_description_content_type="text/markdown",
